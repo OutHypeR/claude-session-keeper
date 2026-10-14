@@ -18,16 +18,16 @@ const CHECK_EVERY_MS = MIN
 type Limits = { tokens: number; turns: number }
 
 // Bigger, pricier models hand over sooner.
-const limitsFor = (model: string, window: number): Limits => {
+const limitsFor = (model: string, _window: number): Limits => {
   const m = model.toLowerCase()
   const base: Limits = /fable|opus/.test(m)
-    ? { tokens: 150_000, turns: 60 }
+    ? { tokens: 350_000, turns: 60 }
     : /sonnet/.test(m)
-      ? { tokens: 200_000, turns: 100 }
+      ? { tokens: 500_000, turns: 100 }
       : /haiku/.test(m)
-        ? { tokens: 200_000, turns: 150 }
+        ? { tokens: 500_000, turns: 150 }
         : { tokens: 150_000, turns: 80 }
-  return { tokens: Math.min(base.tokens, Math.round(window * 0.7)), turns: base.turns }
+  return base // no cap from the context window; Claude Code's own compaction still applies when the window fills
 }
 
 type Verdict = {

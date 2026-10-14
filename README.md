@@ -33,12 +33,12 @@ Limits depend on the model (bigger models hand over sooner):
 
 | Model | Tokens | Turns |
 | --- | --- | --- |
-| Opus / Fable | 150k | 60 |
-| Sonnet | 200k | 100 |
-| Haiku | 200k | 150 |
+| Opus / Fable | 350k | 60 |
+| Sonnet | 500k | 100 |
+| Haiku | 500k | 150 |
 | other | 150k | 80 |
 
-Never above 70% of the model's context window, and never below 30k tokens. If the cache has already gone cold (more than an hour idle), the limits drop to 60%, because the next turn re-reads everything anyway. After a clear it waits at least 10 minutes before it can hand over again. Change any of these numbers at the top of `hooks/register.tsx`.
+It never clears a session under 30k tokens. The token limits are not capped by the model's context window: a session whose window is smaller than its limit hands over only on the turn limit, or is compacted by Claude Code itself when the window fills. If the cache has already gone cold (more than an hour idle), the limits drop to 60%, because the next turn re-reads everything anyway. After a clear it waits at least 10 minutes before it can hand over again. Change any of these numbers at the top of `hooks/register.tsx`.
 
 ## Good to know
 
