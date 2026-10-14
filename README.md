@@ -43,6 +43,7 @@ Never above 70% of the model's context window, and never below 30k tokens. If th
 ## Good to know
 
 - **Pings cost a little usage.** Each one is a one-word model call on the cached context. Use `/away on` when you leave for a long time.
+- **The pings assume a 1-hour prompt cache.** If your sessions use the 5-minute cache, a ping every 58 minutes never lands while the cache is still warm: it only costs usage. Turn `/away on` to stop the pings, and keep the handover part. (The interval is `PING_EVERY_MS` at the top of `hooks/register.tsx`.)
 - **A clear starts a new session.** The old transcript stays in Claude Code's history (`claude --resume`). The handover note is what carries the work forward, so a clear mid-task can lose detail the note did not capture. Turn `/autoclear off` if you would rather clear by hand.
 - **Handover notes may contain project details.** Add `.claude/handovers/` to your project's `.gitignore` if you do not want them committed.
 - Each session keeps its own handover state, so several open sessions never pick up each other's notes.
