@@ -1,0 +1,5 @@
+{
+  "name": "session-keeper",
+  "owner": { "name": "OutHypeR" },
+  "plugins": [{ "name": "session-keeper", "source": "./" }]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "session-keeper",
+  "version": "0.3.0",
+  "description": "Keeps the prompt cache warm while you are idle, and when a session gets too big, writes a handover note, clears, and carries on from the note. Shows its state in a row above the prompt.",
+  "author": { "name": "OutHypeR" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
