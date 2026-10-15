@@ -12,6 +12,7 @@ const MIN_TOKENS_TO_PING = 20_000 // not worth warming a tiny context
 const MIN_TOKENS_TO_CLEAR = 30_000 // never clear a small context
 const COLD_FACTOR = 0.6 // cache lapsed: the next turn re-bills everything, so clear sooner
 const RETRY_AFTER_FAIL_MS = 30 * MIN
+const WRITE_TIMEOUT_MS = 15 * MIN // give up on a handover note that never appears
 const COOLDOWN_AFTER_CLEAR_MS = 10 * MIN // never hand over twice back to back
 const CHECK_EVERY_MS = MIN
 
@@ -70,9 +71,9 @@ const summary = (v: Verdict) =>
   `${v.turns} of ${v.limits.turns} turns, cache ${v.cold ? 'cold' : 'warm'} (${v.ageMin} min since the last reply). ` +
   `${v.clear ? 'Should clear' : 'Keep going'}: ${v.why}.`
 
-const handoverPrompt = (path: string) =>
+const handoverPrompt = (path: string, why: string) =>
   [
-    `This session is about to be cleared and resumed from a handover note. Write that note now to: ${path}`,
+    `This session is about to be cleared and resumed from a handover note (session-keeper: ${why}). Write that note now to: ${path}`,
     '',
     'Create the folder if needed. Make it complete enough that a fresh session with no memory of this one can carry on:',
     '1. The goal and what the user asked for, in their words where it matters.',
@@ -96,6 +97,7 @@ const S = {
   isWorking: false,
   phase: 'idle' as 'idle' | 'writing' | 'clearing',
   handoverPath: '',
+  writingSince: 0,
   holdUntil: 0,
   pings: 0,
   isPingFailureShown: false,
@@ -119,6 +121,7 @@ const restorePhase = async ($: EngineInterface) => {
   if (phase === 'writing') {
     S.phase = phase
     S.handoverPath = rest.join('|')
+    S.writingSince = await $.clock.now() // the start time was lost with the reload; count from now
   } else if (phase === 'clearing') {
     await update($, phaseAtom, () => '') // a reload hit mid-clear; the clear itself is done by now
   }
@@ -154,9 +157,10 @@ const startHandover = async ($: EngineInterface, why: string) => {
   const [cwd, now] = await Promise.all([$.session.cwd(), $.clock.now()])
   const stamp = new Date(now).toISOString().replace(/[:.]/g, '-')
   S.handoverPath = `${cwd.split('\\').join('/')}/.claude/handovers/${stamp}.md`
+  S.writingSince = now
   await setPhase($, 'writing', S.handoverPath)
   $.ui.toast(`session-keeper: writing a handover (${why})`)
-  const sent = await $.prompt.submit({ text: handoverPrompt(S.handoverPath), asUser: true })
+  const sent = await $.prompt.submit({ text: handoverPrompt(S.handoverPath, why), asUser: true })
   if (sent.drop) {
     await setPhase($, 'idle')
     S.holdUntil = now + RETRY_AFTER_FAIL_MS
@@ -168,6 +172,9 @@ const finishHandover = async ($: EngineInterface) => {
   const path = S.handoverPath
   const now = await $.clock.now()
   if (!(await $.fs.exists(path))) {
+    // Another turn can finish before the handover prompt runs (a background task's notice
+    // queued ahead of it). That is not the handover turn: keep waiting for the note.
+    if (now - (S.writingSince || now) < WRITE_TIMEOUT_MS) return
     await setPhase($, 'idle')
     S.holdUntil = now + RETRY_AFTER_FAIL_MS
     $.ui.toast('session-keeper: no handover file was written, so I did not clear. Will retry in 30 min.')
@@ -198,8 +205,11 @@ const finishHandover = async ($: EngineInterface) => {
 const tick = async ($: EngineInterface) => {
   await restorePhase($)
   await refreshView($)
-  if (S.phase !== 'idle' || S.isWorking) return
   const now = await $.clock.now()
+  if (S.phase === 'writing' && !S.isWorking && S.writingSince && now - S.writingSince >= WRITE_TIMEOUT_MS) {
+    return finishHandover($) // the note never came: give up and say so
+  }
+  if (S.phase !== 'idle' || S.isWorking) return
   const idle = now - S.lastTouch
 
   if (idle > CACHE_TTL_MS && now >= S.holdUntil && (await isAutoclear($))) {
