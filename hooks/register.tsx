@@ -98,6 +98,7 @@ const S = {
   phase: 'idle' as 'idle' | 'writing' | 'clearing',
   handoverPath: '',
   writingSince: 0,
+  isHandoverRunning: false, // the handover prompt's own turn has started (it can wait in the queue first)
   holdUntil: 0,
   pings: 0,
   isPingFailureShown: false,
@@ -158,6 +159,7 @@ const startHandover = async ($: EngineInterface, why: string) => {
   const stamp = new Date(now).toISOString().replace(/[:.]/g, '-')
   S.handoverPath = `${cwd.split('\\').join('/')}/.claude/handovers/${stamp}.md`
   S.writingSince = now
+  S.isHandoverRunning = false
   await setPhase($, 'writing', S.handoverPath)
   $.ui.toast(`session-keeper: writing a handover (${why})`)
   const sent = await $.prompt.submit({ text: handoverPrompt(S.handoverPath, why), asUser: true })
@@ -172,8 +174,13 @@ const finishHandover = async ($: EngineInterface) => {
   const path = S.handoverPath
   const now = await $.clock.now()
   if (!(await $.fs.exists(path))) {
-    // Another turn can finish before the handover prompt runs (a background task's notice
-    // queued ahead of it). That is not the handover turn: keep waiting for the note.
+    // Another turn can finish before the handover prompt runs (a message or a background task's
+    // notice queued ahead of it, and that turn can outlast the timeout). That is not the handover
+    // turn: the handover prompt is next, so restart the clock and keep waiting for the note.
+    if (!S.isHandoverRunning) {
+      S.writingSince = now
+      return
+    }
     if (now - (S.writingSince || now) < WRITE_TIMEOUT_MS) return
     await setPhase($, 'idle')
     S.holdUntil = now + RETRY_AFTER_FAIL_MS
@@ -248,8 +255,13 @@ const onTurnComplete = async ($: EngineInterface) => {
 }
 
 export const register: Register = on => {
-  on('turn.start', ($, e, next) => {
+  on('turn.start', async ($, e, next) => {
     S.isWorking = true
+    if (S.phase === 'writing' && S.handoverPath && e.text.includes(S.handoverPath)) {
+      // The timeout counts from here, not from when the prompt was queued.
+      S.isHandoverRunning = true
+      S.writingSince = await $.clock.now()
+    }
     return next(e)
   })
 
