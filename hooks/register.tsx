@@ -42,7 +42,8 @@ type Verdict = {
   cold: boolean
 }
 
-const assess = async ($: EngineInterface, lastTouch: number): Promise<Verdict> => {
+// wasCold: the turn that just ended began on a lapsed cache (see turn.start).
+const assess = async ($: EngineInterface, lastTouch: number, wasCold = false): Promise<Verdict> => {
   const [usage, model, turns, now] = await Promise.all([
     $.session.usage(),
     $.session.model(),
@@ -51,7 +52,7 @@ const assess = async ($: EngineInterface, lastTouch: number): Promise<Verdict> =
   ])
   const tokens = usage.context.tokens ?? 0
   const ageMs = Math.max(0, now - lastTouch)
-  const cold = ageMs > CACHE_TTL_MS && tokens >= MIN_TOKENS_TO_CLEAR
+  const cold = (wasCold || ageMs > CACHE_TTL_MS) && tokens >= MIN_TOKENS_TO_CLEAR
   const base = limitsFor(model, usage.context.window)
   const k = cold ? COLD_FACTOR : 1
   const limits: Limits = { tokens: Math.round(base.tokens * k), turns: Math.round(base.turns * k) }
@@ -102,6 +103,7 @@ const S = {
   holdUntil: 0,
   pings: 0,
   isPingFailureShown: false,
+  isColdAtStart: false, // the current turn began after the cache lapsed
 }
 
 const view = atom({ plugin: 'session-keeper', key: 'view' } as const, null)
@@ -206,9 +208,10 @@ const finishHandover = async ($: EngineInterface) => {
   }
 }
 
-// One check a minute. Ping when 58 minutes have passed with no activity; if the
-// cache already lapsed while you were away and the context is big, hand over
-// instead of paying to re-read it all.
+// One check a minute. Ping when 58 minutes have passed with no activity.
+// It never hands over while you are away: writing the note would re-read the whole
+// lapsed context at full price, for a session you may never reopen. A cold session
+// hands over after your next reply instead, once that reply has paid the re-read.
 const tick = async ($: EngineInterface) => {
   await restorePhase($)
   await refreshView($)
@@ -218,11 +221,6 @@ const tick = async ($: EngineInterface) => {
   }
   if (S.phase !== 'idle' || S.isWorking) return
   const idle = now - S.lastTouch
-
-  if (idle > CACHE_TTL_MS && now >= S.holdUntil && (await isAutoclear($))) {
-    const v = await assess($, S.lastTouch)
-    if (v.clear) return startHandover($, v.why)
-  }
 
   if (idle >= PING_EVERY_MS && S.pings < MAX_PINGS_IN_A_ROW && !(await isAway($))) {
     const { context } = await $.session.usage()
@@ -240,6 +238,8 @@ const tick = async ($: EngineInterface) => {
 }
 
 const onTurnComplete = async ($: EngineInterface) => {
+  const wasCold = S.isColdAtStart
+  S.isColdAtStart = false
   S.isWorking = false
   S.lastTouch = await $.clock.now()
   S.pings = 0
@@ -249,13 +249,17 @@ const onTurnComplete = async ($: EngineInterface) => {
     // Let the turn close before clearing under it.
     $.clock.after(1500, () => void finishHandover($).catch(() => {}))
   } else if (S.phase === 'idle' && S.lastTouch >= S.holdUntil && (await isAutoclear($))) {
-    const v = await assess($, S.lastTouch)
+    const v = await assess($, S.lastTouch, wasCold)
     if (v.clear) await startHandover($, v.why)
   }
 }
 
 export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
+    if (S.phase === 'idle' && !S.isWorking) {
+      // A turn starting from rest more than an hour after the last activity re-reads a lapsed cache.
+      S.isColdAtStart = (await $.clock.now()) - S.lastTouch > CACHE_TTL_MS
+    }
     S.isWorking = true
     if (S.phase === 'writing' && S.handoverPath && e.text.includes(S.handoverPath)) {
       // The timeout counts from here, not from when the prompt was queued.
@@ -336,7 +340,7 @@ export const register: Register = on => {
     await refreshView($)
     return {
       text: now
-        ? 'Away mode ON: no keep-warm pings. The cache will lapse after an hour; a big session may hand over and clear on its own.'
+        ? 'Away mode ON: no keep-warm pings. The cache will lapse after an hour; a big session then hands over after your next reply.'
         : `Away mode OFF: pinging every ${PING_EVERY_MS / MIN} minutes while idle.`,
     }
   })
