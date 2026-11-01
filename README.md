@@ -3,7 +3,7 @@
 A Claude Code mod that looks after long sessions:
 
 - **Keeps the prompt cache warm.** The prompt cache lasts an hour. While you are idle in a big session, it sends a tiny ping every 58 minutes (at most 8 in a row) so your next message does not re-read the whole context at full price.
-- **Hands over and clears by itself.** When a session passes a size or turn limit, it asks Claude to write a handover note, runs `/clear`, and starts the fresh session from that note. Notes go in `<project>/.claude/handovers/`.
+- **Hands over and clears by itself.** When a session passes a size or turn limit, it asks Claude to write a handover note, runs `/clear`, and starts the fresh session from that note. Notes go in `<project>/.claude/handovers/`. Claude's last reply before the clear comes along too: it is added word for word to the end of the note and quoted at the top of the fresh session (cut at 6,000 characters there; the note keeps it whole), so you can still see what Claude last told you.
 - **Shows its state** in a row above the prompt: cache warm or cold, next ping, and how close the session is to clearing.
 
 ## Install

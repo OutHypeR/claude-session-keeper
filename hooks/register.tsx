@@ -86,9 +86,19 @@ const handoverPrompt = (path: string, why: string) =>
     'Never put keys, tokens or passwords in it. When the file is written, reply with only: Handover written.',
   ].join('\n')
 
-const resumePrompt = (path: string) =>
-  `This is a continuation. Your previous session was cleared on purpose and left a handover note at ${path}. ` +
-  'Read it in full, then give me two lines: the goal as you understand it and the next step you will take. Then carry on.'
+// The last reply quoted in the resume prompt is cut at this length; the note keeps it whole.
+const CARRY_MAX_CHARS = 6000
+
+const resumePrompt = (path: string, lastReply = '') => {
+  const ask =
+    `This is a continuation. Your previous session was cleared on purpose and left a handover note at ${path}. ` +
+    'Read it in full, then give me two lines: the goal as you understand it and the next step you will take. Then carry on.'
+  if (!lastReply.trim()) return ask
+  const cut = lastReply.length > CARRY_MAX_CHARS
+  const shown = cut ? lastReply.slice(0, CARRY_MAX_CHARS).trimEnd() + '\n\n[... cut here; the whole reply is at the end of the note]' : lastReply
+  const quoted = shown.split('\n').map(l => (l ? `> ${l}` : '>')).join('\n')
+  return `Your last reply before the clear (kept by session-keeper):\n\n${quoted}\n\n${ask}`
+}
 
 // Mutable state lives at the top level so the helpers below can take `$`.
 // A hot reload resets it, so phase and path are mirrored into the session's own state (see
@@ -104,6 +114,8 @@ const S = {
   pings: 0,
   isPingFailureShown: false,
   isColdAtStart: false, // the current turn began after the cache lapsed
+  lastAnswer: '', // Claude's last visible reply in this session (handover turns left out)
+  carried: '', // the reply taken across the current handover
 }
 
 const view = atom({ plugin: 'session-keeper', key: 'view' } as const, null)
@@ -162,6 +174,7 @@ const startHandover = async ($: EngineInterface, why: string) => {
   S.handoverPath = `${cwd.split('\\').join('/')}/.claude/handovers/${stamp}.md`
   S.writingSince = now
   S.isHandoverRunning = false
+  S.carried = S.lastAnswer
   await setPhase($, 'writing', S.handoverPath)
   $.ui.toast(`session-keeper: writing a handover (${why})`)
   const sent = await $.prompt.submit({ text: handoverPrompt(S.handoverPath, why), asUser: true })
@@ -189,6 +202,20 @@ const finishHandover = async ($: EngineInterface) => {
     $.ui.toast('session-keeper: no handover file was written, so I did not clear. Will retry in 30 min.')
     return
   }
+  if (S.carried.trim()) {
+    // Keep the reply whole in the note too, so it survives even if the resume prompt is lost.
+    try {
+      const note = await $.fs.read(path)
+      await $.fs.write(path, `${note.trimEnd()}
+
+## Claude's last reply before the clear
+
+(Copied word for word by session-keeper.)
+
+${S.carried}
+`)
+    } catch {}
+  }
   await setPhase($, 'clearing')
   try {
     await $.command.run({ command: 'clear' })
@@ -202,7 +229,10 @@ const finishHandover = async ($: EngineInterface) => {
   S.pings = 0
   S.holdUntil = S.lastTouch + COOLDOWN_AFTER_CLEAR_MS
   await setPhase($, 'idle')
-  const sent = await $.prompt.submit({ text: resumePrompt(path), asUser: true })
+  const carried = S.carried
+  S.carried = ''
+  S.lastAnswer = ''
+  const sent = await $.prompt.submit({ text: resumePrompt(path, carried), asUser: true })
   if (sent.drop) {
     $.ui.toast(`session-keeper: cleared, but the resume prompt was not sent (${sent.drop}). Handover: ${path}`)
   }
@@ -271,6 +301,9 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    // Remember the last reply worth carrying across a clear: not a subagent's, not an
+    // interrupted turn, not the handover turn's own 'Handover written.'.
+    if (!e.agentId && S.phase === 'idle' && !e.isAborted && e.answer?.trim()) S.lastAnswer = e.answer
     if (!e.agentId) void onTurnComplete($).catch(() => {}) // a subagent's turn is not the session's
     return result
   })
